@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+frontend/node_modules/
+frontend/dist/
+
+pcb_parser/sample.brd
+pcb_parser/output/
+
+frontend/public/board.json
