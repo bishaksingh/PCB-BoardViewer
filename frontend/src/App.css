@@ -493,3 +493,577 @@ button {
 .loading-screen p {
   color: #94a3b8;
 }
+
+
+/* =========================================================
+   STEP 10B — NextBV-style viewer shell
+   Based on the supplied reference screenshot:
+   dark navy workspace, blue board, light right rail,
+   hidden-by-default inspector panel, larger board labels.
+   ========================================================= */
+
+html,
+body,
+#root {
+  background: #0f172a;
+}
+
+body {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app {
+  background: #0f172a;
+}
+
+.topbar {
+  display: none;
+}
+
+.workspace {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  background: #0f172a;
+}
+
+.viewer-area {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  position: relative;
+  background: #0f172a;
+  overflow: hidden;
+}
+
+.viewer-wrapper {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  background: #0f172a;
+}
+
+.boards-back-button {
+  position: absolute;
+  left: 26px;
+  top: 18px;
+  z-index: 25;
+  border: 0;
+  background: transparent;
+  color: #a9b7cc;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.boards-back-button:hover {
+  color: #ffffff;
+}
+
+.back-arrow {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.viewer-toolbar {
+  position: absolute;
+  left: 50%;
+  top: auto;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 30;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 10px;
+  background: #1e293b;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.viewer-toolbar button {
+  min-width: 42px;
+  height: 34px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #d6dfec;
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.viewer-toolbar button:hover {
+  background: #334155;
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 24px;
+  background: #6b7890;
+  margin: 0 8px;
+}
+
+.layer-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(120px);
+  z-index: 31;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 10px;
+  background: #1e293b;
+  border: 0;
+  border-radius: 0;
+}
+
+.layer-button {
+  min-width: 70px;
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #e1e7ef;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.layer-button:hover {
+  background: #334155;
+}
+
+.layer-button.active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.view-state,
+.stats {
+  display: none;
+}
+
+.side-panel {
+  position: relative;
+  order: 2;
+  width: 0;
+  height: 100%;
+  flex: 0 0 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  background: #0f172a;
+  border-left: 1px solid #253247;
+  transition: width 180ms ease, opacity 160ms ease;
+}
+
+.side-panel.open {
+  width: 360px;
+  flex-basis: 360px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.side-panel-close-row {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 10px;
+}
+
+.side-panel-close {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #a9b7cc;
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.side-panel-close:hover {
+  background: #1e293b;
+  color: #ffffff;
+}
+
+.right-rail {
+  order: 3;
+  width: 54px;
+  flex: 0 0 54px;
+  height: 100%;
+  background: #eeeeee;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0;
+  gap: 10px;
+  border-left: 1px solid #d9d9d9;
+  z-index: 40;
+}
+
+.rail-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #3a7b36;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 17px;
+  margin-bottom: 2px;
+}
+
+.rail-button {
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #27354a;
+  font-size: 25px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rail-button:hover,
+.rail-button.active {
+  background: #dedede;
+}
+
+.rail-spacer {
+  flex: 1;
+}
+
+.rail-theme-button {
+  width: 42px;
+  height: 42px;
+  border: 0;
+  background: transparent;
+  color: #27354a;
+  font-size: 27px;
+  cursor: pointer;
+}
+
+.panel-section {
+  border-bottom: 1px solid #27354a;
+}
+
+.section-heading h2 {
+  font-size: 16px;
+  color: #f3f6fb;
+}
+
+.section-heading span {
+  font-size: 12px;
+  color: #91a2b9;
+}
+
+.panel-section input {
+  background: #1e293b;
+  border-color: #3c4b62;
+  color: #f3f6fb;
+}
+
+.result {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+.result:hover {
+  background: #334155;
+}
+
+.result.selected {
+  background: #23516a;
+  border-color: #58bcd5;
+}
+
+.info-card,
+.net-tag,
+.pin-table,
+.net-inspector {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+.pin-header {
+  background: #263449;
+}
+
+.loading-screen {
+  background: #0f172a;
+}
+
+@media (max-width: 1000px) {
+  .side-panel.open {
+    width: 320px;
+    flex-basis: 320px;
+  }
+
+  .right-rail {
+    width: 50px;
+    flex-basis: 50px;
+  }
+
+  .layer-toolbar {
+    transform: translateX(90px);
+  }
+}
+
+@media (max-width: 760px) {
+  .side-panel.open {
+    position: absolute;
+    right: 50px;
+    top: 0;
+    width: min(340px, calc(100vw - 50px));
+    height: 100%;
+    z-index: 100;
+    box-shadow: -12px 0 30px rgba(0,0,0,0.22);
+  }
+
+  .layer-toolbar {
+    left: auto;
+    right: 66px;
+    transform: none;
+  }
+
+  .viewer-toolbar {
+    left: 14px;
+    transform: none;
+  }
+}
+
+
+/* =========================================================
+   STEP 10C — NextBV-like component/net interaction
+   ========================================================= */
+.side-panel {
+  background: #eef1f5;
+  color: #263449;
+  border-left: 1px solid #d5dbe4;
+}
+
+.side-panel.open {
+  box-shadow: -10px 0 26px rgba(15, 23, 42, 0.08);
+}
+
+.side-panel-close-row {
+  background: #eef1f5;
+  border-bottom: 1px solid #d5dbe4;
+}
+
+.side-panel-close {
+  color: #566477;
+}
+
+.side-panel-close:hover {
+  background: #e2e7ee;
+  color: #202b3b;
+}
+
+.panel-section,
+.inspector-section {
+  background: #eef1f5;
+  border-color: #d5dbe4;
+}
+
+.section-heading h2 {
+  color: #253247;
+}
+
+.section-heading span {
+  color: #718096;
+}
+
+.panel-section input {
+  background: #3d485a;
+  border-color: #56647a;
+  color: #ffffff;
+}
+
+.panel-section input::placeholder {
+  color: #c1c9d5;
+}
+
+.result {
+  background: #3b4759;
+  color: #f7f9fc;
+}
+
+.result:hover {
+  background: #48556a;
+}
+
+.result.selected {
+  background: #2563eb;
+  border-color: #4e86f2;
+  color: #ffffff;
+}
+
+.result small {
+  color: #c9d2df;
+}
+
+.result.selected small {
+  color: #eaf2ff;
+}
+
+.inspector-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #3b4759;
+}
+
+.inspector-tab {
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+  color: #d8e0ea;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.inspector-tab.active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.inspector-ref,
+.empty-title,
+.block-title {
+  color: #253247;
+}
+
+.inspector-subtitle,
+.empty-description {
+  color: #718096;
+}
+
+.inspector-header {
+  border-bottom-color: #ccd4df;
+}
+
+.info-card {
+  background: #ffffff;
+  border-color: #d5dbe4;
+  color: #253247;
+}
+
+.info-card span,
+.muted {
+  color: #718096;
+}
+
+.net-tag {
+  background: #ffffff;
+  border-color: #d5dbe4;
+  color: #344256;
+}
+
+.pin-table {
+  background: #ffffff;
+  border-color: #ccd4df;
+}
+
+.pin-row {
+  border-bottom-color: #e2e7ed;
+  color: #344256;
+}
+
+.pin-header {
+  background: #556174;
+  color: #ffffff;
+}
+
+.pin-net {
+  color: #344256;
+}
+
+.net-inspector {
+  background: #ffffff;
+  border-color: #d5dbe4;
+  color: #253247;
+}
+
+.selected-net-name {
+  color: #1d5fd3;
+}
+
+.net-stats div {
+  background: #f4f6f9;
+}
+
+.net-stats span {
+  color: #718096;
+}
+
+.hover-card {
+  position: absolute;
+  min-width: 190px;
+  max-width: 260px;
+  padding: 10px 12px;
+  border: 1px solid #6a778a;
+  border-radius: 5px;
+  background: rgba(30, 41, 59, 0.97);
+  color: #f8fafc;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  z-index: 45;
+}
+
+.hover-title {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.hover-subtitle {
+  margin: 3px 0 8px;
+  color: #cbd5e1;
+  font-size: 10px;
+}
+
+.hover-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 11px;
+}
+
+.hover-row span {
+  flex: 0 0 auto;
+  color: #aeb9c8;
+}
+
+.hover-row strong {
+  min-width: 0;
+  max-width: 170px;
+  text-align: right;
+  word-break: break-word;
+  color: #ffffff;
+}
+
+/* Canvas labels use the same font family direction as the shell. */
+.viewer-wrapper .pcb-canvas {
+  image-rendering: auto;
+}

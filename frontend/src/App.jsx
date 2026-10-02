@@ -81,6 +81,12 @@ function PCBCanvas({
 
   const dragRef = useRef(null);
 
+  // Hover state is intentionally separate from selection. Hovering a
+  // pad/component shows a tooltip but does not change the selected part.
+  const [hoverPart, setHoverPart] = useState(null);
+  const [hoverPad, setHoverPad] = useState(null);
+  const [hoverPosition, setHoverPosition] = useState(null);
+
   const partMap = useMemo(() => {
     const map = new Map();
 
@@ -181,6 +187,108 @@ function PCBCanvas({
     return metrics;
   }, [board]);
 
+
+  const pinsByNet = useMemo(() => {
+    const map = new Map();
+
+    if (board.net_index && typeof board.net_index === "object") {
+      for (const [netName, entry] of Object.entries(board.net_index)) {
+        const pinIndices = Array.isArray(entry?.pin_indices)
+          ? entry.pin_indices
+          : [];
+
+        const pins = pinIndices
+          .map((index) => board.pins[index])
+          .filter(Boolean);
+
+        map.set(netName, pins);
+      }
+    }
+
+    // Fallback for older board.json files without net_index.
+    if (map.size === 0) {
+      for (const pin of board.pins) {
+        const net = pin.net?.trim();
+        if (!net) continue;
+
+        if (!map.has(net)) {
+          map.set(net, []);
+        }
+
+        map.get(net).push(pin);
+      }
+    }
+
+    return map;
+  }, [board]);
+
+  const getPartDetails = (part) => {
+    if (!part) return { pins: [], nets: [] };
+
+    const pinIndices = Array.isArray(part.pin_indices)
+      ? part.pin_indices
+      : null;
+
+    const pins = pinIndices
+      ? pinIndices.map((index) => board.pins[index]).filter(Boolean)
+      : board.pins.filter(
+          (pin) => Number(getPinPartId(pin)) === Number(part.id),
+        );
+
+    const nets = [...new Set(
+      pins.map((pin) => pin.net?.trim()).filter(Boolean),
+    )];
+
+    return { pins, nets };
+  };
+
+  const screenToBoard = (clientX, clientY) => {
+    const canvas = canvasRef.current;
+
+    if (!canvas || !boardInfo) return null;
+
+    const rect = canvas.getBoundingClientRect();
+
+    if (rect.width <= 0 || rect.height <= 0) return null;
+
+    const fitScale = getFitScale(
+      rect.width,
+      rect.height,
+      boardInfo.width,
+      boardInfo.height,
+      rotation,
+    );
+
+    const scale = fitScale * view.zoom;
+
+    if (scale <= 0) return null;
+
+    const mouseX = clientX - rect.left;
+    const mouseY = clientY - rect.top;
+
+    const viewVector = {
+      x: (mouseX - rect.width / 2 - view.offsetX) / scale,
+      y: (mouseY - rect.height / 2 - view.offsetY) / scale,
+    };
+
+    const boardVector = inverseTransformVector(
+      viewVector.x,
+      viewVector.y,
+      rotation,
+      flipX,
+      flipY,
+    );
+
+    return {
+      rect,
+      scale,
+      mouseX,
+      mouseY,
+      boardX: boardInfo.centerX + boardVector.x,
+      boardY: boardInfo.centerY + boardVector.y,
+    };
+  };
+
   const boardInfo = useMemo(() => {
     const points = board.format_points || [];
 
@@ -208,6 +316,179 @@ function PCBCanvas({
     };
   }, [board]);
 
+
+  const clampView = (nextView, rect) => {
+    if (!boardInfo || !rect) return nextView;
+
+    const fitScale = getFitScale(
+      rect.width,
+      rect.height,
+      boardInfo.width,
+      boardInfo.height,
+      rotation,
+    );
+
+    const scale = fitScale * nextView.zoom;
+
+    const quarterTurn =
+      normalizeAngle(rotation) === 90 ||
+      normalizeAngle(rotation) === 270;
+
+    const displayWidth = quarterTurn
+      ? boardInfo.height
+      : boardInfo.width;
+
+    const displayHeight = quarterTurn
+      ? boardInfo.width
+      : boardInfo.height;
+
+    const boardScreenWidth = displayWidth * scale;
+    const boardScreenHeight = displayHeight * scale;
+
+    // Keep the board centered while it fits inside the viewport.
+    // Once zoomed beyond the viewport, allow panning but keep a
+    // visible strip of board on screen so it cannot disappear completely.
+    const keepVisible = 80;
+
+    let minOffsetX;
+    let maxOffsetX;
+    let minOffsetY;
+    let maxOffsetY;
+
+    if (boardScreenWidth <= rect.width) {
+      const centeredRange = (rect.width - boardScreenWidth) / 2;
+      minOffsetX = -centeredRange;
+      maxOffsetX = centeredRange;
+    } else {
+      minOffsetX =
+        rect.width / 2 -
+        boardScreenWidth / 2 +
+        keepVisible;
+
+      maxOffsetX =
+        boardScreenWidth / 2 -
+        rect.width / 2 -
+        keepVisible;
+    }
+
+    if (boardScreenHeight <= rect.height) {
+      const centeredRange =
+        (rect.height - boardScreenHeight) / 2;
+
+      minOffsetY = -centeredRange;
+      maxOffsetY = centeredRange;
+    } else {
+      minOffsetY =
+        rect.height / 2 -
+        boardScreenHeight / 2 +
+        keepVisible;
+
+      maxOffsetY =
+        boardScreenHeight / 2 -
+        rect.height / 2 -
+        keepVisible;
+    }
+
+    return {
+      ...nextView,
+      offsetX: Math.min(
+        Math.max(nextView.offsetX, minOffsetX),
+        maxOffsetX,
+      ),
+      offsetY: Math.min(
+        Math.max(nextView.offsetY, minOffsetY),
+        maxOffsetY,
+      ),
+    };
+  };
+
+  const zoomAtPoint = (clientX, clientY, factor) => {
+    const canvas = canvasRef.current;
+
+    if (!canvas || !boardInfo) return;
+
+    const rect = canvas.getBoundingClientRect();
+
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const currentFitScale = getFitScale(
+      rect.width,
+      rect.height,
+      boardInfo.width,
+      boardInfo.height,
+      rotation,
+    );
+
+    const currentScale =
+      currentFitScale * view.zoom;
+
+    if (currentScale <= 0) return;
+
+    const mouseX = clientX - rect.left;
+    const mouseY = clientY - rect.top;
+
+    const currentViewVector = {
+      x:
+        (mouseX -
+          rect.width / 2 -
+          view.offsetX) /
+        currentScale,
+
+      y:
+        (mouseY -
+          rect.height / 2 -
+          view.offsetY) /
+        currentScale,
+    };
+
+    const boardVector = inverseTransformVector(
+      currentViewVector.x,
+      currentViewVector.y,
+      rotation,
+      flipX,
+      flipY,
+    );
+
+    const boardX =
+      boardInfo.centerX + boardVector.x;
+
+    const boardY =
+      boardInfo.centerY + boardVector.y;
+
+    const nextZoom = Math.max(
+      0.15,
+      Math.min(view.zoom * factor, 30),
+    );
+
+    const nextScale =
+      currentFitScale * nextZoom;
+
+    const transformed = transformVector(
+      boardX - boardInfo.centerX,
+      boardY - boardInfo.centerY,
+      rotation,
+      flipX,
+      flipY,
+    );
+
+    const nextView = {
+      zoom: nextZoom,
+      offsetX:
+        mouseX -
+        rect.width / 2 -
+        transformed.x * nextScale,
+
+      offsetY:
+        mouseY -
+        rect.height / 2 -
+        transformed.y * nextScale,
+    };
+
+    setView(
+      clampView(nextView, rect),
+    );
+  };
+
   const getScreenPoint = (x, y, rect, scale, info) => {
     const transformed = transformVector(
       x - info.centerX,
@@ -223,66 +504,6 @@ function PCBCanvas({
     };
   };
 
-  const focusPart = (part) => {
-    if (!part || !boardInfo) return;
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-
-    const box = partBounds.get(Number(part.id));
-    if (!box) return;
-
-    const fitScale = getFitScale(
-      rect.width,
-      rect.height,
-      boardInfo.width,
-      boardInfo.height,
-      rotation,
-    );
-
-    const partWidth = Math.max(1, box.maxX - box.minX);
-    const partHeight = Math.max(1, box.maxY - box.minY);
-    const partRatio = Math.max(
-      0.0001,
-      Math.min(
-        partWidth / boardInfo.width,
-        partHeight / boardInfo.height,
-      ),
-    );
-
-    const desiredScreenRatio = 0.16;
-    const zoom = Math.max(
-      1.5,
-      Math.min(30, desiredScreenRatio / partRatio),
-    );
-
-    const partCenterX = (box.minX + box.maxX) / 2;
-    const partCenterY = (box.minY + box.maxY) / 2;
-
-    const transformed = transformVector(
-      partCenterX - boardInfo.centerX,
-      partCenterY - boardInfo.centerY,
-      rotation,
-      flipX,
-      flipY,
-    );
-
-    const zoomedScale = fitScale * zoom;
-
-    setView({
-      zoom,
-      offsetX: -transformed.x * zoomedScale,
-      offsetY: -transformed.y * zoomedScale,
-    });
-  };
-
-  useEffect(() => {
-    if (!selectedPart) return;
-    focusPart(selectedPart);
-  }, [selectedPart, rotation, flipX, flipY, boardInfo, partBounds]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -304,7 +525,7 @@ function PCBCanvas({
       const height = rect.height;
 
       ctx.clearRect(0, 0, width, height);
-      ctx.fillStyle = "#0b1220";
+      ctx.fillStyle = "#0f172a";
       ctx.fillRect(0, 0, width, height);
 
       if (!boardInfo) {
@@ -345,15 +566,162 @@ function PCBCanvas({
       });
 
       ctx.closePath();
-      ctx.fillStyle = "#263238";
+      ctx.fillStyle = "#27386b";
       ctx.fill();
-      ctx.strokeStyle = "#94a3b8";
+      ctx.strokeStyle = "#8194b5";
       ctx.lineWidth = 2;
       ctx.stroke();
 
       const selectedPartId = Number(selectedPart?.id);
       const selectedNetName = selectedNet?.net;
       const selectedPadIndex = selectedPad?.index;
+
+      // ---------------------------------
+      // LOGICAL CONNECTIVITY LINES
+      // ---------------------------------
+      // These are connectivity/ratline guides derived from the BRD
+      // net relationships. They are not physical copper traces.
+      const drawConnectionLine = (fromPin, toPin) => {
+        const from = screenPoint(
+          fromPin.x,
+          fromPin.y,
+        );
+
+        const to = screenPoint(
+          toPin.x,
+          toPin.y,
+        );
+
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.78)";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([]);
+        ctx.stroke();
+      };
+
+      if (selectedPad && selectedPad.net?.trim()) {
+        const netName = selectedPad.net.trim();
+        const netPins = pinsByNet.get(netName) || [];
+
+        const targets = netPins
+          .filter(
+            (pin) =>
+              Number(pin.index) !==
+              Number(selectedPad.index),
+          )
+          .sort(
+            (a, b) =>
+              Math.hypot(
+                a.x - selectedPad.x,
+                a.y - selectedPad.y,
+              ) -
+              Math.hypot(
+                b.x - selectedPad.x,
+                b.y - selectedPad.y,
+              ),
+          )
+          .slice(0, 48);
+
+        for (const target of targets) {
+          drawConnectionLine(
+            selectedPad,
+            target,
+          );
+        }
+      } else if (selectedNetName) {
+        const netPins =
+          pinsByNet.get(selectedNetName) || [];
+
+        if (netPins.length > 1) {
+          const anchor =
+            selectedPartId &&
+            netPins.find(
+              (pin) =>
+                Number(getPinPartId(pin)) ===
+                selectedPartId,
+            ) ||
+            netPins[0];
+
+          const targets = netPins
+            .filter(
+              (pin) =>
+                Number(pin.index) !==
+                Number(anchor.index),
+            )
+            .sort(
+              (a, b) =>
+                Math.hypot(
+                  a.x - anchor.x,
+                  a.y - anchor.y,
+                ) -
+                Math.hypot(
+                  b.x - anchor.x,
+                  b.y - anchor.y,
+                ),
+            )
+            .slice(0, 48);
+
+          for (const target of targets) {
+            drawConnectionLine(
+              anchor,
+              target,
+            );
+          }
+        }
+      } else if (selectedPart) {
+        const details =
+          getPartDetails(selectedPart);
+
+        const seenNets = new Set();
+        let lineCount = 0;
+
+        for (const pin of details.pins) {
+          if (lineCount >= 60) break;
+
+          const netName = pin.net?.trim();
+          if (!netName || seenNets.has(netName)) {
+            continue;
+          }
+
+          seenNets.add(netName);
+
+          const netPins =
+            pinsByNet.get(netName) || [];
+
+          const targets = netPins
+            .filter(
+              (candidate) =>
+                Number(
+                  getPinPartId(candidate),
+                ) !== selectedPartId,
+            )
+            .sort(
+              (a, b) =>
+                Math.hypot(
+                  a.x - pin.x,
+                  a.y - pin.y,
+                ) -
+                Math.hypot(
+                  b.x - pin.x,
+                  b.y - pin.y,
+                ),
+            );
+
+          const target = targets[0];
+
+          if (target) {
+            drawConnectionLine(
+              pin,
+              target,
+            );
+
+            lineCount += 1;
+          }
+        }
+      }
 
       // ---------------------------------
       // COMPONENT BODIES
@@ -399,16 +767,16 @@ function PCBCanvas({
         );
 
         if (isSelected) {
-          ctx.fillStyle = "rgba(250, 204, 21, 0.24)";
-          ctx.strokeStyle = "#facc15";
+          ctx.fillStyle = "rgba(250, 204, 21, 0.18)";
+          ctx.strokeStyle = "#f4c95d";
           ctx.lineWidth = 2.5;
         } else if (part.mounting_side === "Bottom") {
-          ctx.fillStyle = "rgba(37, 99, 235, 0.08)";
-          ctx.strokeStyle = "#60a5fa";
+          ctx.fillStyle = "rgba(71, 108, 139, 0.16)";
+          ctx.strokeStyle = "#8aa6c4";
           ctx.lineWidth = 0.8;
         } else {
-          ctx.fillStyle = "rgba(239, 68, 68, 0.08)";
-          ctx.strokeStyle = "#f87171";
+          ctx.fillStyle = "rgba(255,255,255,0.03)";
+          ctx.strokeStyle = "#aebbd1";
           ctx.lineWidth = 0.8;
         }
 
@@ -416,8 +784,14 @@ function PCBCanvas({
         ctx.stroke();
 
         if (visibleWidth > 18 && visibleHeight > 8) {
-          ctx.fillStyle = isSelected ? "#ffffff" : "#cbd5e1";
-          ctx.font = isSelected ? "bold 10px Arial" : "9px Arial";
+          ctx.fillStyle = isSelected ? "#ffffff" : "#dbe7f5";
+          const labelSize = Math.max(
+            12,
+            Math.min(32, Math.min(visibleWidth, visibleHeight) * 0.22),
+          );
+          ctx.font = isSelected
+            ? `700 ${Math.max(18, labelSize + 4)}px Inter, Arial, sans-serif`
+            : `600 ${labelSize}px Inter, Arial, sans-serif`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.fillText(
@@ -485,22 +859,22 @@ function PCBCanvas({
 
         if (isSelectedPad) {
           ctx.fillStyle = "#ffffff";
-          ctx.strokeStyle = "#facc15";
+          ctx.strokeStyle = "#f4c95d";
           ctx.lineWidth = 1.5;
         } else if (isSelectedPart) {
           ctx.fillStyle = "#facc15";
-          ctx.strokeStyle = "#fde68a";
+          ctx.strokeStyle = "#fff1b8";
           ctx.lineWidth = 1;
         } else if (isSelectedNet) {
-          ctx.fillStyle = "#22d3ee";
-          ctx.strokeStyle = "#a5f3fc";
+          ctx.fillStyle = "#7fd0e8";
+          ctx.strokeStyle = "#bceaf5";
           ctx.lineWidth = 0.8;
         } else if (part.mounting_side === "Bottom") {
-          ctx.fillStyle = "#60a5fa";
+          ctx.fillStyle = "#8aa6c4";
           ctx.strokeStyle = "rgba(255,255,255,0.18)";
           ctx.lineWidth = 0.6;
         } else {
-          ctx.fillStyle = "#f87171";
+          ctx.fillStyle = "#b9c5d7";
           ctx.strokeStyle = "rgba(255,255,255,0.18)";
           ctx.lineWidth = 0.6;
         }
@@ -548,7 +922,7 @@ function PCBCanvas({
           const minSY = Math.min(...corners.map((point) => point.y));
           const maxSY = Math.max(...corners.map((point) => point.y));
 
-          ctx.strokeStyle = "#facc15";
+          ctx.strokeStyle = "#f4c95d";
           ctx.lineWidth = 2;
           ctx.setLineDash([6, 4]);
           ctx.strokeRect(
@@ -560,7 +934,7 @@ function PCBCanvas({
           ctx.setLineDash([]);
 
           ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 13px Arial";
+          ctx.font = "700 14px Inter, Arial, sans-serif";
           ctx.fillText(
             selectedPart.name,
             minSX,
@@ -590,20 +964,35 @@ function PCBCanvas({
     partMap,
     partBounds,
     padMetricsByPart,
+    pinsByNet,
   ]);
 
   const zoomIn = () => {
-    setView((old) => ({
-      ...old,
-      zoom: Math.min(old.zoom * 1.25, 30),
-    }));
+    const canvas = canvasRef.current;
+
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+
+    zoomAtPoint(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+      1.25,
+    );
   };
 
   const zoomOut = () => {
-    setView((old) => ({
-      ...old,
-      zoom: Math.max(old.zoom / 1.25, 0.15),
-    }));
+    const canvas = canvasRef.current;
+
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+
+    zoomAtPoint(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+      0.8,
+    );
   };
 
   const resetView = () => {
@@ -617,53 +1006,29 @@ function PCBCanvas({
   const handleWheel = (event) => {
     event.preventDefault();
 
-    const factor = event.deltaY < 0 ? 1.15 : 0.87;
+    const factor =
+      event.deltaY < 0 ? 1.15 : 0.87;
 
-    setView((old) => ({
-      ...old,
-      zoom: Math.max(
-        0.15,
-        Math.min(old.zoom * factor, 30),
-      ),
-    }));
+    zoomAtPoint(
+      event.clientX,
+      event.clientY,
+      factor,
+    );
   };
 
   const handleCanvasClick = (event) => {
-    const canvas = canvasRef.current;
+    const hit = screenToBoard(event.clientX, event.clientY);
 
-    if (!canvas || !boardInfo) return;
+    if (!hit) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
-
-    const fitScale = getFitScale(
-      rect.width,
-      rect.height,
-      boardInfo.width,
-      boardInfo.height,
-      rotation,
-    );
-
-    const scale = fitScale * view.zoom;
-
-    if (scale <= 0) return;
-
-    const viewVector = {
-      x: (mouseX - rect.width / 2 - view.offsetX) / scale,
-      y: (mouseY - rect.height / 2 - view.offsetY) / scale,
-    };
-
-    const boardVector = inverseTransformVector(
-      viewVector.x,
-      viewVector.y,
-      rotation,
-      flipX,
-      flipY,
-    );
-
-    const boardX = boardInfo.centerX + boardVector.x;
-    const boardY = boardInfo.centerY + boardVector.y;
+    const {
+      rect,
+      scale,
+      mouseX,
+      mouseY,
+      boardX,
+      boardY,
+    } = hit;
 
     let nearestPin = null;
     let nearestPinDistance = Infinity;
@@ -681,27 +1046,17 @@ function PCBCanvas({
         continue;
       }
 
-      const pinView = transformVector(
-        pin.x - boardInfo.centerX,
-        pin.y - boardInfo.centerY,
-        rotation,
-        flipX,
-        flipY,
+      const screen = getScreenPoint(
+        pin.x,
+        pin.y,
+        rect,
+        scale,
+        boardInfo,
       );
 
-      const pinScreenX =
-        rect.width / 2 +
-        view.offsetX +
-        pinView.x * scale;
-
-      const pinScreenY =
-        rect.height / 2 +
-        view.offsetY +
-        pinView.y * scale;
-
       const distance = Math.hypot(
-        mouseX - pinScreenX,
-        mouseY - pinScreenY,
+        mouseX - screen.x,
+        mouseY - screen.y,
       );
 
       if (distance < nearestPinDistance) {
@@ -710,9 +1065,8 @@ function PCBCanvas({
       }
     }
 
-    const padHitRadius = 14;
-
-    if (nearestPin && nearestPinDistance <= padHitRadius) {
+    // Direct pad selection takes precedence over component selection.
+    if (nearestPin && nearestPinDistance <= 14) {
       const partId = Number(getPinPartId(nearestPin));
       const part = partMap.get(partId);
 
@@ -761,10 +1115,124 @@ function PCBCanvas({
       }
     }
 
+    onSelectPad(null);
+
     if (nearestPart) {
-      onSelectPad(null);
       onSelectPart(nearestPart);
     }
+  };
+
+  const findHoverTarget = (event) => {
+    const hit = screenToBoard(event.clientX, event.clientY);
+
+    if (!hit) return;
+
+    const {
+      rect,
+      scale,
+      mouseX,
+      mouseY,
+      boardX,
+      boardY,
+    } = hit;
+
+    let nearestPin = null;
+    let nearestPinDistance = Infinity;
+
+    for (const pin of board.pins) {
+      const partId = Number(getPinPartId(pin));
+      const part = partMap.get(partId);
+
+      if (!part) continue;
+
+      if (
+        activeLayer !== "Both" &&
+        part.mounting_side !== activeLayer
+      ) {
+        continue;
+      }
+
+      const screen = getScreenPoint(
+        pin.x,
+        pin.y,
+        rect,
+        scale,
+        boardInfo,
+      );
+
+      const distance = Math.hypot(
+        mouseX - screen.x,
+        mouseY - screen.y,
+      );
+
+      if (distance < nearestPinDistance) {
+        nearestPinDistance = distance;
+        nearestPin = pin;
+      }
+    }
+
+    const hoverPadRadius = Math.max(
+      8,
+      Math.min(18, 10 + view.zoom * 0.6),
+    );
+
+    if (nearestPin && nearestPinDistance <= hoverPadRadius) {
+      const partId = Number(getPinPartId(nearestPin));
+      const part = partMap.get(partId);
+
+      if (part) {
+        setHoverPart(part);
+        setHoverPad(nearestPin);
+        setHoverPosition({ x: mouseX, y: mouseY });
+        return;
+      }
+    }
+
+    let nearestPart = null;
+    let nearestDistance = Infinity;
+
+    for (const [partId, box] of partBounds) {
+      const part = partMap.get(partId);
+      if (!part) continue;
+
+      if (
+        activeLayer !== "Both" &&
+        part.mounting_side !== activeLayer
+      ) {
+        continue;
+      }
+
+      const basePadding = 90 / Math.max(view.zoom, 1);
+
+      const inside =
+        boardX >= box.minX - basePadding &&
+        boardX <= box.maxX + basePadding &&
+        boardY >= box.minY - basePadding &&
+        boardY <= box.maxY + basePadding;
+
+      if (!inside) continue;
+
+      const centerPartX = (box.minX + box.maxX) / 2;
+      const centerPartY = (box.minY + box.maxY) / 2;
+
+      const distance = Math.hypot(
+        boardX - centerPartX,
+        boardY - centerPartY,
+      );
+
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestPart = part;
+      }
+    }
+
+    setHoverPad(null);
+    setHoverPart(nearestPart);
+    setHoverPosition(
+      nearestPart
+        ? { x: mouseX, y: mouseY }
+        : null,
+    );
   };
 
   const handleMouseDown = (event) => {
@@ -778,19 +1246,47 @@ function PCBCanvas({
 
   const handleMouseMove = (event) => {
     const drag = dragRef.current;
-    if (!drag) return;
 
-    setView((old) => ({
-      ...old,
+    if (!drag) {
+      findHoverTarget(event);
+      return;
+    }
+
+    setHoverPart(null);
+    setHoverPad(null);
+    setHoverPosition(null);
+
+    const canvas = canvasRef.current;
+
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+
+    const nextView = {
+      ...view,
       offsetX:
-        drag.offsetX + (event.clientX - drag.clientX),
+        drag.offsetX +
+        (event.clientX - drag.clientX),
+
       offsetY:
-        drag.offsetY + (event.clientY - drag.clientY),
-    }));
+        drag.offsetY +
+        (event.clientY - drag.clientY),
+    };
+
+    setView(
+      clampView(nextView, rect),
+    );
   };
 
   const stopDragging = () => {
     dragRef.current = null;
+  };
+
+  const handleMouseLeave = () => {
+    dragRef.current = null;
+    setHoverPart(null);
+    setHoverPad(null);
+    setHoverPosition(null);
   };
 
   return (
@@ -803,8 +1299,61 @@ function PCBCanvas({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={stopDragging}
-        onMouseLeave={stopDragging}
+        onMouseLeave={handleMouseLeave}
       />
+
+      {hoverPart && hoverPosition ? (() => {
+        const details = getPartDetails(hoverPart);
+
+        return (
+          <div
+            className="hover-card"
+            style={{
+              left: Math.min(
+                Math.max(hoverPosition.x + 14, 8),
+                Math.max(8, (canvasRef.current?.clientWidth || 240) - 250),
+              ),
+              top: Math.min(
+                Math.max(hoverPosition.y + 14, 8),
+                Math.max(8, (canvasRef.current?.clientHeight || 160) - 145),
+              ),
+            }}
+          >
+            <div className="hover-title">{hoverPart.name}</div>
+            <div className="hover-subtitle">
+              {hoverPart.mounting_side} · {hoverPart.part_type}
+            </div>
+
+            {hoverPad ? (
+              <>
+                <div className="hover-row">
+                  <span>Pad</span>
+                  <strong>{hoverPad.index}</strong>
+                </div>
+                <div className="hover-row">
+                  <span>Net</span>
+                  <strong>{hoverPad.net?.trim() || "No Net"}</strong>
+                </div>
+                <div className="hover-row">
+                  <span>Coordinates</span>
+                  <strong>{hoverPad.x} · {hoverPad.y}</strong>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="hover-row">
+                  <span>Pins</span>
+                  <strong>{details.pins.length}</strong>
+                </div>
+                <div className="hover-row">
+                  <span>Nets</span>
+                  <strong>{details.nets.length}</strong>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })() : null}
 
       <div className="viewer-toolbar">
         <button onClick={zoomIn} title="Zoom in">
@@ -1016,6 +1565,7 @@ function App() {
   const [rotation, setRotation] = useState(0);
   const [flipX, setFlipX] = useState(false);
   const [flipY, setFlipY] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
 
   const partPins = useMemo(() => {
     if (!board) return new Map();
@@ -1134,15 +1684,13 @@ function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">PCB BoardViewer</div>
-        <div className="file-name">
-          {board.source_file}
-        </div>
-      </header>
-
       <div className="workspace">
         <main className="viewer-area">
+          <button className="boards-back-button" type="button">
+            <span className="back-arrow">←</span>
+            <span>Boards</span>
+          </button>
+
           <PCBCanvas
             board={board}
             selectedPart={selectedPart}
@@ -1158,8 +1706,13 @@ function App() {
             onSelectPart={(part) => {
               setSelectedPart(part);
               setSelectedNet(null);
+              setComponentSearch(part.name);
+              setPanelOpen(true);
             }}
-            onSelectPad={setSelectedPad}
+            onSelectPad={(pad) => {
+              setSelectedPad(pad);
+              if (pad) setPanelOpen(true);
+            }}
           />
 
           <div className="layer-toolbar">
@@ -1212,7 +1765,18 @@ function App() {
           </div>
         </main>
 
-        <aside className="side-panel">
+        <aside className={panelOpen ? "side-panel open" : "side-panel"}>
+          <div className="side-panel-close-row">
+            <button
+              className="side-panel-close"
+              type="button"
+              onClick={() => setPanelOpen(false)}
+              aria-label="Close panel"
+              title="Close panel"
+            >
+              ×
+            </button>
+          </div>
           <section className="panel-section components-section">
             <div className="section-heading">
               <h2>Components</h2>
@@ -1240,6 +1804,8 @@ function App() {
                     setSelectedPart(part);
                     setSelectedNet(null);
                     setSelectedPad(null);
+                    setComponentSearch(part.name);
+                    setPanelOpen(true);
                   }}
                 >
                   <strong>{part.name}</strong>
@@ -1278,6 +1844,8 @@ function App() {
                     setSelectedNet({ net });
                     setSelectedPart(null);
                     setSelectedPad(null);
+                    setNetSearch(net);
+                    setPanelOpen(true);
                   }}
                 >
                   {net}
@@ -1300,6 +1868,61 @@ function App() {
             />
           </section>
         </aside>
+
+        <div className="right-rail">
+          <div className="rail-avatar">B</div>
+
+          <button
+            type="button"
+            className="rail-button"
+            onClick={() => setPanelOpen(true)}
+            title="Open board information"
+            aria-label="Open board information"
+          >
+            ⓘ
+          </button>
+
+          <button
+            type="button"
+            className={panelOpen ? "rail-button active" : "rail-button"}
+            onClick={() => setPanelOpen((value) => !value)}
+            title="Components and nets"
+            aria-label="Components and nets"
+          >
+            ◉
+          </button>
+
+          <button
+            type="button"
+            className="rail-button"
+            onClick={() => setPanelOpen(true)}
+            title="Layer controls"
+            aria-label="Layer controls"
+          >
+            ▤
+          </button>
+
+          <button
+            type="button"
+            className="rail-button"
+            onClick={() => setPanelOpen(true)}
+            title="Board settings"
+            aria-label="Board settings"
+          >
+            ☷
+          </button>
+
+          <div className="rail-spacer" />
+
+          <button
+            type="button"
+            className="rail-theme-button"
+            title="Theme"
+            aria-label="Theme"
+          >
+            ◐
+          </button>
+        </div>
       </div>
     </div>
   );
