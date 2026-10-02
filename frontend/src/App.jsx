@@ -3,14 +3,73 @@ import "./App.css";
 
 const getPinPartId = (pin) => pin.part_id ?? pin.part;
 
+const normalizeAngle = (angle) => {
+  const value = angle % 360;
+  return value < 0 ? value + 360 : value;
+};
+
+function transformVector(dx, dy, rotation, flipX, flipY) {
+  let x = dx;
+  let y = dy;
+
+  if (flipX) x = -x;
+  if (flipY) y = -y;
+
+  const angle = normalizeAngle(rotation);
+  const radians = (angle * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+
+  return {
+    x: x * cos - y * sin,
+    y: x * sin + y * cos,
+  };
+}
+
+function inverseTransformVector(dx, dy, rotation, flipX, flipY) {
+  const angle = normalizeAngle(rotation);
+  const radians = (-angle * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+
+  let x = dx * cos - dy * sin;
+  let y = dx * sin + dy * cos;
+
+  if (flipX) x = -x;
+  if (flipY) y = -y;
+
+  return { x, y };
+}
+
+function getFitScale(width, height, boardWidth, boardHeight, rotation) {
+  const angle = normalizeAngle(rotation);
+  const quarterTurn = angle === 90 || angle === 270;
+
+  const displayWidth = quarterTurn ? boardHeight : boardWidth;
+  const displayHeight = quarterTurn ? boardWidth : boardHeight;
+
+  const padding = 70;
+
+  return Math.min(
+    (width - padding * 2) / Math.max(1, displayWidth),
+    (height - padding * 2) / Math.max(1, displayHeight),
+  );
+}
+
 function PCBCanvas({
   board,
   selectedPart,
   selectedNet,
   selectedPad,
   activeLayer,
+  rotation,
+  flipX,
+  flipY,
   onSelectPart,
   onSelectPad,
+  onRotate,
+  onFlipX,
+  onFlipY,
 }) {
   const canvasRef = useRef(null);
 
@@ -26,7 +85,7 @@ function PCBCanvas({
     const map = new Map();
 
     for (const part of board.parts) {
-      map.set(part.id, part);
+      map.set(Number(part.id), part);
     }
 
     return map;
@@ -35,10 +94,9 @@ function PCBCanvas({
   const partBounds = useMemo(() => {
     const bounds = new Map();
 
-    // Prefer enriched bounds from the parser when available.
     for (const part of board.parts) {
       if (part.bounds) {
-        bounds.set(part.id, {
+        bounds.set(Number(part.id), {
           minX: Number(part.bounds.min_x ?? 0),
           maxX: Number(part.bounds.max_x ?? 0),
           minY: Number(part.bounds.min_y ?? 0),
@@ -47,7 +105,6 @@ function PCBCanvas({
       }
     }
 
-    // Fallback: calculate bounds from pins.
     for (const pin of board.pins) {
       const partId = Number(getPinPartId(pin));
       if (!Number.isFinite(partId)) continue;
@@ -63,7 +120,6 @@ function PCBCanvas({
       }
 
       const box = bounds.get(partId);
-
       box.minX = Math.min(box.minX, pin.x);
       box.maxX = Math.max(box.maxX, pin.x);
       box.minY = Math.min(box.minY, pin.y);
@@ -73,16 +129,12 @@ function PCBCanvas({
     return bounds;
   }, [board]);
 
-  // Estimate a visual pad size from each component's local pin spacing.
-  // The BRD data gives pad/pin center coordinates rather than explicit
-  // pad width/height. We therefore infer a conservative visual size.
   const padMetricsByPart = useMemo(() => {
     const metrics = new Map();
     const pinsByPart = new Map();
 
     for (const pin of board.pins) {
       const partId = Number(getPinPartId(pin));
-
       if (!Number.isFinite(partId)) continue;
 
       if (!pinsByPart.has(partId)) {
@@ -98,8 +150,13 @@ function PCBCanvas({
         continue;
       }
 
-      const xs = pins.map((pin) => pin.x).sort((a, b) => a - b);
-      const ys = pins.map((pin) => pin.y).sort((a, b) => a - b);
+      const xs = pins
+        .map((pin) => pin.x)
+        .sort((a, b) => a - b);
+
+      const ys = pins
+        .map((pin) => pin.y)
+        .sort((a, b) => a - b);
 
       let nearestX = Infinity;
       let nearestY = Infinity;
@@ -115,7 +172,6 @@ function PCBCanvas({
       }
 
       const spacing = Math.min(nearestX, nearestY);
-
       metrics.set(
         partId,
         Number.isFinite(spacing) ? spacing : 6,
@@ -125,98 +181,122 @@ function PCBCanvas({
     return metrics;
   }, [board]);
 
-  // Automatically move and zoom to a selected component.
-  useEffect(() => {
-    if (!selectedPart) return;
-
-    const canvas = canvasRef.current;
-    const box = partBounds.get(selectedPart.id);
+  const boardInfo = useMemo(() => {
     const points = board.format_points || [];
 
-    if (!canvas || !box || !points.length) return;
-
-    const rect = canvas.getBoundingClientRect();
-
-    if (rect.width <= 0 || rect.height <= 0) return;
+    if (!points.length) {
+      return null;
+    }
 
     const xs = points.map((point) => point.x);
     const ys = points.map((point) => point.y);
 
-    const boardMinX = Math.min(...xs);
-    const boardMaxX = Math.max(...xs);
-    const boardMinY = Math.min(...ys);
-    const boardMaxY = Math.max(...ys);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
 
-    const boardWidth = Math.max(1, boardMaxX - boardMinX);
-    const boardHeight = Math.max(1, boardMaxY - boardMinY);
+    return {
+      minX,
+      maxX,
+      minY,
+      maxY,
+      width: Math.max(1, maxX - minX),
+      height: Math.max(1, maxY - minY),
+      centerX: (minX + maxX) / 2,
+      centerY: (minY + maxY) / 2,
+    };
+  }, [board]);
 
-    const padding = 70;
+  const getScreenPoint = (x, y, rect, scale, info) => {
+    const transformed = transformVector(
+      x - info.centerX,
+      y - info.centerY,
+      rotation,
+      flipX,
+      flipY,
+    );
 
-    const fitScale = Math.min(
-      (rect.width - padding * 2) / boardWidth,
-      (rect.height - padding * 2) / boardHeight,
+    return {
+      x: rect.width / 2 + view.offsetX + transformed.x * scale,
+      y: rect.height / 2 + view.offsetY + transformed.y * scale,
+    };
+  };
+
+  const focusPart = (part) => {
+    if (!part || !boardInfo) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const box = partBounds.get(Number(part.id));
+    if (!box) return;
+
+    const fitScale = getFitScale(
+      rect.width,
+      rect.height,
+      boardInfo.width,
+      boardInfo.height,
+      rotation,
     );
 
     const partWidth = Math.max(1, box.maxX - box.minX);
     const partHeight = Math.max(1, box.maxY - box.minY);
-
-    const widthRatio = partWidth / boardWidth;
-    const heightRatio = partHeight / boardHeight;
-    const smallestRatio = Math.max(
+    const partRatio = Math.max(
       0.0001,
-      Math.min(widthRatio, heightRatio),
+      Math.min(
+        partWidth / boardInfo.width,
+        partHeight / boardInfo.height,
+      ),
     );
 
-    // Try to make the selected component visible at a useful scale.
     const desiredScreenRatio = 0.16;
-    const autoZoom = Math.max(
+    const zoom = Math.max(
       1.5,
-      Math.min(30, desiredScreenRatio / smallestRatio),
+      Math.min(30, desiredScreenRatio / partRatio),
     );
-
-    const zoomedScale = fitScale * autoZoom;
-
-    const boardCenterX = (boardMinX + boardMaxX) / 2;
-    const boardCenterY = (boardMinY + boardMaxY) / 2;
 
     const partCenterX = (box.minX + box.maxX) / 2;
     const partCenterY = (box.minY + box.maxY) / 2;
 
-    const offsetX =
-      -(partCenterX - boardCenterX) * zoomedScale;
+    const transformed = transformVector(
+      partCenterX - boardInfo.centerX,
+      partCenterY - boardInfo.centerY,
+      rotation,
+      flipX,
+      flipY,
+    );
 
-    const offsetY =
-      -(partCenterY - boardCenterY) * zoomedScale;
+    const zoomedScale = fitScale * zoom;
 
     setView({
-      zoom: autoZoom,
-      offsetX,
-      offsetY,
+      zoom,
+      offsetX: -transformed.x * zoomedScale,
+      offsetY: -transformed.y * zoomedScale,
     });
-  }, [selectedPart, board, partBounds]);
+  };
+
+  useEffect(() => {
+    if (!selectedPart) return;
+    focusPart(selectedPart);
+  }, [selectedPart, rotation, flipX, flipY, boardInfo, partBounds]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-
     if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
-
     if (!ctx) return;
 
     const draw = () => {
       const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
 
-      canvas.width = Math.max(
-        1,
-        Math.floor(rect.width * dpr),
-      );
-
-      canvas.height = Math.max(
-        1,
-        Math.floor(rect.height * dpr),
-      );
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -224,78 +304,54 @@ function PCBCanvas({
       const height = rect.height;
 
       ctx.clearRect(0, 0, width, height);
-
       ctx.fillStyle = "#0b1220";
       ctx.fillRect(0, 0, width, height);
 
-      const points = board.format_points || [];
-
-      if (!points.length) {
+      if (!boardInfo) {
         ctx.fillStyle = "#ffffff";
         ctx.font = "18px Arial";
         ctx.fillText("No board geometry found", 30, 40);
         return;
       }
 
-      const xs = points.map((point) => point.x);
-      const ys = points.map((point) => point.y);
-
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-
-      const boardWidth = Math.max(1, maxX - minX);
-      const boardHeight = Math.max(1, maxY - minY);
-
-      const padding = 70;
-
-      const fitScale = Math.min(
-        (width - padding * 2) / boardWidth,
-        (height - padding * 2) / boardHeight,
+      const fitScale = getFitScale(
+        width,
+        height,
+        boardInfo.width,
+        boardInfo.height,
+        rotation,
       );
 
       const scale = fitScale * view.zoom;
 
-      const centerX = (minX + maxX) / 2;
-      const centerY = (minY + maxY) / 2;
-
-      const screenX = (x) =>
-        width / 2 +
-        view.offsetX +
-        (x - centerX) * scale;
-
-      const screenY = (y) =>
-        height / 2 +
-        view.offsetY +
-        (y - centerY) * scale;
+      const screenPoint = (x, y) =>
+        getScreenPoint(x, y, rect, scale, boardInfo);
 
       // ---------------------------------
       // BOARD OUTLINE
       // ---------------------------------
+      const points = board.format_points || [];
+
       ctx.beginPath();
 
       points.forEach((point, index) => {
-        const x = screenX(point.x);
-        const y = screenY(point.y);
+        const screen = screenPoint(point.x, point.y);
 
         if (index === 0) {
-          ctx.moveTo(x, y);
+          ctx.moveTo(screen.x, screen.y);
         } else {
-          ctx.lineTo(x, y);
+          ctx.lineTo(screen.x, screen.y);
         }
       });
 
       ctx.closePath();
-
       ctx.fillStyle = "#263238";
       ctx.fill();
-
       ctx.strokeStyle = "#94a3b8";
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      const selectedPartId = selectedPart?.id;
+      const selectedPartId = Number(selectedPart?.id);
       const selectedNetName = selectedNet?.net;
       const selectedPadIndex = selectedPad?.index;
 
@@ -303,6 +359,8 @@ function PCBCanvas({
       // COMPONENT BODIES
       // ---------------------------------
       for (const part of board.parts) {
+        const partId = Number(part.id);
+
         if (
           activeLayer !== "Both" &&
           part.mounting_side !== activeLayer
@@ -310,29 +368,31 @@ function PCBCanvas({
           continue;
         }
 
-        const box = partBounds.get(part.id);
-
+        const box = partBounds.get(partId);
         if (!box) continue;
 
         const bodyPadding = 6;
+        const corners = [
+          [box.minX - bodyPadding, box.minY - bodyPadding],
+          [box.maxX + bodyPadding, box.minY - bodyPadding],
+          [box.maxX + bodyPadding, box.maxY + bodyPadding],
+          [box.minX - bodyPadding, box.maxY + bodyPadding],
+        ].map(([x, y]) => screenPoint(x, y));
 
-        const x1 = screenX(box.minX - bodyPadding);
-        const x2 = screenX(box.maxX + bodyPadding);
-        const y1 = screenY(box.minY - bodyPadding);
-        const y2 = screenY(box.maxY + bodyPadding);
+        const minSX = Math.min(...corners.map((point) => point.x));
+        const maxSX = Math.max(...corners.map((point) => point.x));
+        const minSY = Math.min(...corners.map((point) => point.y));
+        const maxSY = Math.max(...corners.map((point) => point.y));
 
-        const left = Math.min(x1, x2);
-        const top = Math.min(y1, y2);
-        const visibleWidth = Math.max(6, Math.abs(x2 - x1));
-        const visibleHeight = Math.max(6, Math.abs(y2 - y1));
+        const visibleWidth = Math.max(6, maxSX - minSX);
+        const visibleHeight = Math.max(6, maxSY - minSY);
 
-        const isSelected = selectedPartId === part.id;
+        const isSelected = selectedPartId === partId;
 
         ctx.beginPath();
-
         ctx.roundRect(
-          left,
-          top,
+          minSX,
+          minSY,
           visibleWidth,
           visibleHeight,
           2,
@@ -356,23 +416,15 @@ function PCBCanvas({
         ctx.stroke();
 
         if (visibleWidth > 18 && visibleHeight > 8) {
-          ctx.fillStyle = isSelected
-            ? "#ffffff"
-            : "#cbd5e1";
-
-          ctx.font = isSelected
-            ? "bold 10px Arial"
-            : "9px Arial";
-
+          ctx.fillStyle = isSelected ? "#ffffff" : "#cbd5e1";
+          ctx.font = isSelected ? "bold 10px Arial" : "9px Arial";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-
           ctx.fillText(
             part.name,
-            left + visibleWidth / 2,
-            top + visibleHeight / 2,
+            minSX + visibleWidth / 2,
+            minSY + visibleHeight / 2,
           );
-
           ctx.textAlign = "start";
           ctx.textBaseline = "alphabetic";
         }
@@ -385,22 +437,23 @@ function PCBCanvas({
         const partId = Number(getPinPartId(pin));
         const part = partMap.get(partId);
 
+        if (!part) continue;
+
         if (
           activeLayer !== "Both" &&
-          part &&
           part.mounting_side !== activeLayer
         ) {
           continue;
         }
 
-        const x = screenX(pin.x);
-        const y = screenY(pin.y);
+        const screen = screenPoint(pin.x, pin.y);
 
         const isSelectedPart =
-          selectedPartId && partId === Number(selectedPartId);
+          selectedPartId === partId;
 
         const isSelectedNet =
-          selectedNetName && pin.net === selectedNetName;
+          selectedNetName &&
+          pin.net === selectedNetName;
 
         const isSelectedPad =
           selectedPadIndex != null &&
@@ -409,11 +462,13 @@ function PCBCanvas({
         const spacing =
           padMetricsByPart.get(partId) || 6;
 
-        // BRD provides the pad center coordinates, not explicit pad dimensions.
-        // Use local pin spacing to create a conservative visual pad size.
-        const padPixels = Math.max(2, Math.min(10, spacing * scale * 0.28));
+        const padPixels = Math.max(
+          2,
+          Math.min(10, spacing * scale * 0.28),
+        );
+
         const padSize =
-          isSelectedPart || isSelectedNet
+          isSelectedPad || isSelectedPart || isSelectedNet
             ? Math.max(6, padPixels + 2)
             : padPixels;
 
@@ -421,8 +476,8 @@ function PCBCanvas({
 
         ctx.beginPath();
         ctx.roundRect(
-          x - half,
-          y - half,
+          screen.x - half,
+          screen.y - half,
           padSize,
           padSize,
           Math.min(2, half * 0.4),
@@ -431,7 +486,7 @@ function PCBCanvas({
         if (isSelectedPad) {
           ctx.fillStyle = "#ffffff";
           ctx.strokeStyle = "#facc15";
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 1.5;
         } else if (isSelectedPart) {
           ctx.fillStyle = "#facc15";
           ctx.strokeStyle = "#fde68a";
@@ -440,7 +495,7 @@ function PCBCanvas({
           ctx.fillStyle = "#22d3ee";
           ctx.strokeStyle = "#a5f3fc";
           ctx.lineWidth = 0.8;
-        } else if (part?.mounting_side === "Bottom") {
+        } else if (part.mounting_side === "Bottom") {
           ctx.fillStyle = "#60a5fa";
           ctx.strokeStyle = "rgba(255,255,255,0.18)";
           ctx.lineWidth = 0.6;
@@ -465,63 +520,57 @@ function PCBCanvas({
           continue;
         }
 
-        const x = screenX(nail.x);
-        const y = screenY(nail.y);
+        const screen = screenPoint(nail.x, nail.y);
 
         ctx.beginPath();
-        ctx.arc(x, y, 2.2, 0, Math.PI * 2);
-
+        ctx.arc(screen.x, screen.y, 2.2, 0, Math.PI * 2);
         ctx.fillStyle =
-          nail.side === "Bottom"
-            ? "#a78bfa"
-            : "#fb923c";
-
+          nail.side === "Bottom" ? "#a78bfa" : "#fb923c";
         ctx.fill();
       }
 
       // ---------------------------------
-      // SELECTED COMPONENT LABEL
+      // SELECTED COMPONENT BOX
       // ---------------------------------
       if (selectedPart) {
-        const box = partBounds.get(selectedPart.id);
+        const box = partBounds.get(selectedPartId);
 
         if (box) {
-          const x1 = screenX(box.minX);
-          const x2 = screenX(box.maxX);
-          const y1 = screenY(box.minY);
-          const y2 = screenY(box.maxY);
+          const corners = [
+            [box.minX, box.minY],
+            [box.maxX, box.minY],
+            [box.maxX, box.maxY],
+            [box.minX, box.maxY],
+          ].map(([x, y]) => screenPoint(x, y));
 
-          const left = Math.min(x1, x2);
-          const top = Math.min(y1, y2);
-          const widthBox = Math.max(12, Math.abs(x2 - x1));
-          const heightBox = Math.max(12, Math.abs(y2 - y1));
+          const minSX = Math.min(...corners.map((point) => point.x));
+          const maxSX = Math.max(...corners.map((point) => point.x));
+          const minSY = Math.min(...corners.map((point) => point.y));
+          const maxSY = Math.max(...corners.map((point) => point.y));
 
           ctx.strokeStyle = "#facc15";
           ctx.lineWidth = 2;
           ctx.setLineDash([6, 4]);
-
           ctx.strokeRect(
-            left - 8,
-            top - 8,
-            widthBox + 16,
-            heightBox + 16,
+            minSX - 8,
+            minSY - 8,
+            Math.max(12, maxSX - minSX + 16),
+            Math.max(12, maxSY - minSY + 16),
           );
-
           ctx.setLineDash([]);
 
           ctx.fillStyle = "#ffffff";
           ctx.font = "bold 13px Arial";
           ctx.fillText(
             selectedPart.name,
-            left,
-            Math.max(16, top - 12),
+            minSX,
+            Math.max(16, minSY - 12),
           );
         }
       }
     };
 
     draw();
-
     window.addEventListener("resize", draw);
 
     return () => {
@@ -529,10 +578,14 @@ function PCBCanvas({
     };
   }, [
     board,
+    boardInfo,
     selectedPart,
     selectedNet,
     selectedPad,
     activeLayer,
+    rotation,
+    flipX,
+    flipY,
     view,
     partMap,
     partBounds,
@@ -578,52 +631,40 @@ function PCBCanvas({
   const handleCanvasClick = (event) => {
     const canvas = canvasRef.current;
 
-    if (!canvas || !board.format_points?.length) {
-      return;
-    }
+    if (!canvas || !boardInfo) return;
 
     const rect = canvas.getBoundingClientRect();
-
     const mouseX = event.clientX - rect.left;
     const mouseY = event.clientY - rect.top;
 
-    const points = board.format_points;
-
-    const xs = points.map((p) => p.x);
-    const ys = points.map((p) => p.y);
-
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-
-    const boardWidth = Math.max(1, maxX - minX);
-    const boardHeight = Math.max(1, maxY - minY);
-
-    const padding = 70;
-
-    const fitScale = Math.min(
-      (rect.width - padding * 2) / boardWidth,
-      (rect.height - padding * 2) / boardHeight,
+    const fitScale = getFitScale(
+      rect.width,
+      rect.height,
+      boardInfo.width,
+      boardInfo.height,
+      rotation,
     );
 
     const scale = fitScale * view.zoom;
 
     if (scale <= 0) return;
 
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
+    const viewVector = {
+      x: (mouseX - rect.width / 2 - view.offsetX) / scale,
+      y: (mouseY - rect.height / 2 - view.offsetY) / scale,
+    };
 
-    const boardX =
-      centerX +
-      (mouseX - rect.width / 2 - view.offsetX) / scale;
+    const boardVector = inverseTransformVector(
+      viewVector.x,
+      viewVector.y,
+      rotation,
+      flipX,
+      flipY,
+    );
 
-    const boardY =
-      centerY +
-      (mouseY - rect.height / 2 - view.offsetY) / scale;
+    const boardX = boardInfo.centerX + boardVector.x;
+    const boardY = boardInfo.centerY + boardVector.y;
 
-    // First try to select the nearest visible pad/pin.
-    // This makes dense board areas much easier to inspect.
     let nearestPin = null;
     let nearestPinDistance = Infinity;
 
@@ -640,15 +681,23 @@ function PCBCanvas({
         continue;
       }
 
+      const pinView = transformVector(
+        pin.x - boardInfo.centerX,
+        pin.y - boardInfo.centerY,
+        rotation,
+        flipX,
+        flipY,
+      );
+
       const pinScreenX =
         rect.width / 2 +
         view.offsetX +
-        (pin.x - centerX) * scale;
+        pinView.x * scale;
 
       const pinScreenY =
         rect.height / 2 +
         view.offsetY +
-        (pin.y - centerY) * scale;
+        pinView.y * scale;
 
       const distance = Math.hypot(
         mouseX - pinScreenX,
@@ -674,14 +723,11 @@ function PCBCanvas({
       }
     }
 
-    // Fallback to component bounding-box selection when the click
-    // is not close enough to an individual pad.
     let nearestPart = null;
     let nearestDistance = Infinity;
 
     for (const [partId, box] of partBounds) {
       const part = partMap.get(partId);
-
       if (!part) continue;
 
       if (
@@ -701,11 +747,8 @@ function PCBCanvas({
 
       if (!inside) continue;
 
-      const centerPartX =
-        (box.minX + box.maxX) / 2;
-
-      const centerPartY =
-        (box.minY + box.maxY) / 2;
+      const centerPartX = (box.minX + box.maxX) / 2;
+      const centerPartY = (box.minY + box.maxY) / 2;
 
       const distance = Math.hypot(
         boardX - centerPartX,
@@ -735,17 +778,14 @@ function PCBCanvas({
 
   const handleMouseMove = (event) => {
     const drag = dragRef.current;
-
     if (!drag) return;
 
     setView((old) => ({
       ...old,
       offsetX:
-        drag.offsetX +
-        (event.clientX - drag.clientX),
+        drag.offsetX + (event.clientX - drag.clientX),
       offsetY:
-        drag.offsetY +
-        (event.clientY - drag.clientY),
+        drag.offsetY + (event.clientY - drag.clientY),
     }));
   };
 
@@ -767,15 +807,39 @@ function PCBCanvas({
       />
 
       <div className="viewer-toolbar">
-        <button onClick={zoomIn}>+</button>
-        <button onClick={zoomOut}>−</button>
-        <button onClick={resetView}>Fit</button>
+        <button onClick={zoomIn} title="Zoom in">
+          +
+        </button>
+        <button onClick={zoomOut} title="Zoom out">
+          −
+        </button>
+        <button onClick={resetView} title="Fit / reset view">
+          Fit
+        </button>
+        <div className="toolbar-separator" />
+        <button onClick={() => onRotate(-90)} title="Rotate left">
+          ↺
+        </button>
+        <button onClick={() => onRotate(90)} title="Rotate right">
+          ↻
+        </button>
+        <button onClick={onFlipX} title="Mirror horizontally">
+          ⇆
+        </button>
+        <button onClick={onFlipY} title="Mirror vertically">
+          ⇅
+        </button>
       </div>
     </div>
   );
 }
 
-function ComponentInspector({ board, selectedPart, partPins, selectedPad }) {
+function ComponentInspector({
+  board,
+  selectedPart,
+  partPins,
+  selectedPad,
+}) {
   if (!selectedPart) {
     return (
       <div className="empty-inspector">
@@ -792,10 +856,8 @@ function ComponentInspector({ board, selectedPart, partPins, selectedPad }) {
     : null;
 
   const pins = pinIndices
-    ? pinIndices
-        .map((index) => board.pins[index])
-        .filter(Boolean)
-    : (partPins.get(Number(selectedPart.id)) || []);
+    ? pinIndices.map((index) => board.pins[index]).filter(Boolean)
+    : partPins.get(Number(selectedPart.id)) || [];
 
   const uniqueNets = [
     ...new Set(
@@ -812,7 +874,6 @@ function ComponentInspector({ board, selectedPart, partPins, selectedPad }) {
           <div className="inspector-ref">
             {selectedPart.name}
           </div>
-
           <div className="inspector-subtitle">
             {selectedPart.mounting_side} · {selectedPart.part_type}
           </div>
@@ -824,17 +885,14 @@ function ComponentInspector({ board, selectedPart, partPins, selectedPad }) {
           <span>Part Type</span>
           <strong>{selectedPart.part_type}</strong>
         </div>
-
         <div className="info-card">
           <span>Side</span>
           <strong>{selectedPart.mounting_side}</strong>
         </div>
-
         <div className="info-card">
           <span>Pins</span>
           <strong>{pins.length}</strong>
         </div>
-
         <div className="info-card">
           <span>Nets</span>
           <strong>{uniqueNets.length}</strong>
@@ -844,21 +902,17 @@ function ComponentInspector({ board, selectedPart, partPins, selectedPad }) {
       {selectedPad ? (
         <div className="inspector-block">
           <div className="block-title">Selected Pad</div>
-
           <div className="info-card">
             <span>Pad / Pin</span>
-            <strong>{pins.findIndex((pin) => Number(pin.index) === Number(selectedPad.index)) + 1}</strong>
-
-            <span style={{ marginTop: "6px" }}>
-              Net
-            </span>
             <strong>
-              {selectedPad.net?.trim() || "No Net"}
+              {pins.findIndex(
+                (pin) =>
+                  Number(pin.index) === Number(selectedPad.index),
+              ) + 1}
             </strong>
-
-            <span style={{ marginTop: "6px" }}>
-              Coordinates
-            </span>
+            <span className="detail-label">Net</span>
+            <strong>{selectedPad.net?.trim() || "No Net"}</strong>
+            <span className="detail-label">Coordinates</span>
             <strong>
               X {selectedPad.x} · Y {selectedPad.y}
             </strong>
@@ -868,7 +922,6 @@ function ComponentInspector({ board, selectedPart, partPins, selectedPad }) {
 
       <div className="inspector-block">
         <div className="block-title">Connected Nets</div>
-
         <div className="net-tags">
           {uniqueNets.length === 0 ? (
             <div className="muted">No net information</div>
@@ -884,7 +937,6 @@ function ComponentInspector({ board, selectedPart, partPins, selectedPad }) {
 
       <div className="inspector-block">
         <div className="block-title">Pin / Net Connections</div>
-
         <div className="pin-table">
           <div className="pin-row pin-header">
             <span>#</span>
@@ -932,17 +984,14 @@ function NetInspector({ board, selectedNet }) {
   return (
     <div className="net-inspector">
       <div className="block-title">Selected Net</div>
-
       <div className="selected-net-name">
         {selectedNet.net}
       </div>
-
       <div className="net-stats">
         <div>
           <span>Pins</span>
           <strong>{connections.length}</strong>
         </div>
-
         <div>
           <span>Components</span>
           <strong>{componentIds.length}</strong>
@@ -964,9 +1013,10 @@ function App() {
   const [selectedPad, setSelectedPad] = useState(null);
 
   const [activeLayer, setActiveLayer] = useState("Top");
+  const [rotation, setRotation] = useState(0);
+  const [flipX, setFlipX] = useState(false);
+  const [flipY, setFlipY] = useState(false);
 
-  // Build a fast, normalized part -> pins index.
-  // The v3 parser also stores per-part pin_indices; this map is the safe fallback.
   const partPins = useMemo(() => {
     if (!board) return new Map();
 
@@ -995,12 +1045,9 @@ function App() {
         if (!response.ok) {
           throw new Error("Unable to load board.json");
         }
-
         return response.json();
       })
-      .then((data) => {
-        setBoard(data);
-      })
+      .then((data) => setBoard(data))
       .catch((err) => {
         console.error(err);
         setError(err.message);
@@ -1055,6 +1102,21 @@ function App() {
     }
   };
 
+  const rotateBoard = (amount) => {
+    setSelectedPad(null);
+    setRotation((current) => normalizeAngle(current + amount));
+  };
+
+  const flipHorizontal = () => {
+    setSelectedPad(null);
+    setFlipX((value) => !value);
+  };
+
+  const flipVertical = () => {
+    setSelectedPad(null);
+    setFlipY((value) => !value);
+  };
+
   if (error) {
     return (
       <div className="loading-screen">
@@ -1074,7 +1136,9 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">PCB BoardViewer</div>
-        <div className="file-name">{board.source_file}</div>
+        <div className="file-name">
+          {board.source_file}
+        </div>
       </header>
 
       <div className="workspace">
@@ -1085,6 +1149,12 @@ function App() {
             selectedNet={selectedNet}
             selectedPad={selectedPad}
             activeLayer={activeLayer}
+            rotation={rotation}
+            flipX={flipX}
+            flipY={flipY}
+            onRotate={rotateBoard}
+            onFlipX={flipHorizontal}
+            onFlipY={flipVertical}
             onSelectPart={(part) => {
               setSelectedPart(part);
               setSelectedNet(null);
@@ -1125,6 +1195,12 @@ function App() {
             >
               Both
             </button>
+          </div>
+
+          <div className="view-state">
+            <span>Rotation {normalizeAngle(rotation)}°</span>
+            {flipX ? <span>Mirror X</span> : null}
+            {flipY ? <span>Mirror Y</span> : null}
           </div>
 
           <div className="stats">
